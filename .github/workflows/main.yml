@@ -17,23 +17,23 @@ on:
         required: false
         default: ''
         type: string
-      clang_repo:
-        description: 'Custom Clang Repo (dipakai jika Clang Version = custom-repo)'
-        required: false
-        default: 'https://github.com/onettboots/update-alternative-clang'
-        type: string
-      clang_branch:
-        description: 'Custom Clang Branch (kosong = default branch)'
-        required: false
-        default: ''
-        type: string
+      llvm_version:
+        description: 'Versi LLVM/Clang (dipakai jika Clang = update-alternative)'
+        required: true
+        default: '18'
+        type: choice
+        options:
+          - '18'
+          - '19'
+          - '17'
+          - '20'
       clang_version:
         description: 'Clang Toolchain Version'
         required: true
-        default: 'custom-repo'
+        default: 'update-alternative'
         type: choice
         options:
-          - 'custom-repo'
+          - 'update-alternative'
           - 'r510928'
           - 'r487747c'
           - 'r450784d'
@@ -94,36 +94,36 @@ jobs:
 
       - name: Setup Clang
         run: |
-          mkdir -p clang
-          if [ "${{ inputs.clang_version }}" = "custom-repo" ]; then
-            CB="${{ inputs.clang_branch }}"
-            if [ -n "$CB" ]; then
-              git clone --depth=1 -b "$CB" "${{ inputs.clang_repo }}" clang-src
-            else
-              git clone --depth=1 "${{ inputs.clang_repo }}" clang-src
-            fi
-            echo "--- isi repo clang ---"
-            ls -la clang-src
-            CLANG_BIN="$(find clang-src -type f -path '*/bin/clang' | head -n1)"
-            if [ -z "$CLANG_BIN" ]; then
-              echo "::error::bin/clang tidak ditemukan di repo clang. Cek isi repo di log."
-              exit 1
-            fi
-            CLANG_DIR="$(cd "$(dirname "$CLANG_BIN")/.." && pwd)"
-            chmod -R +x "$CLANG_DIR/bin"
-            echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
-            "$CLANG_DIR/bin/clang" --version | head -n1
-          elif [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
-            echo "$PWD/clang/bin" >> "$GITHUB_PATH"
-            "$PWD/clang/bin/clang" --version | head -n1
+          if [ "${{ inputs.clang_version }}" = "update-alternative" ]; then
+            V="${{ inputs.llvm_version }}"
+            wget -q https://apt.llvm.org/llvm.sh -O llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh "$V"
+            sudo apt-get install -y --no-install-recommends "llvm-$V" "lld-$V" "clang-$V"
+            git clone --depth=1 https://github.com/onettboots/update-alternative-clang
+            chmod +x update-alternative-clang/update-alternative-clang.sh
+            sudo ./update-alternative-clang/update-alternative-clang.sh "$V" 500 || echo "::warning::script update-alternative mengembalikan error, lanjut fallback"
+            sudo update-alternatives --set clang "/usr/bin/clang-$V" || true
+            sudo update-alternatives --set llvm-config "/usr/bin/llvm-config-$V" || true
+            for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip llvm-readelf llvm-as llvm-ranlib; do
+              if ! command -v "$t" >/dev/null 2>&1 || ! "$t" --version 2>/dev/null | grep -q "$V\."; then
+                [ -x "/usr/bin/$t-$V" ] && sudo ln -sf "/usr/bin/$t-$V" "/usr/local/bin/$t"
+              fi
+            done
+            clang --version | head -n1
+            ld.lld --version | head -n1
           else
-            if curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" -o clang.tar.gz; then
-              tar -xzf clang.tar.gz -C clang
-            else
-              echo "::warning::Clang ${{ inputs.clang_version }} tidak ditemukan, pakai proton-clang"
-              rm -rf clang
+            mkdir -p clang
+            if [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
               git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+            else
+              if curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" -o clang.tar.gz; then
+                tar -xzf clang.tar.gz -C clang
+              else
+                echo "::warning::Clang ${{ inputs.clang_version }} tidak ditemukan, pakai proton-clang"
+                rm -rf clang
+                git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+              fi
             fi
             echo "$PWD/clang/bin" >> "$GITHUB_PATH"
             "$PWD/clang/bin/clang" --version | head -n1
