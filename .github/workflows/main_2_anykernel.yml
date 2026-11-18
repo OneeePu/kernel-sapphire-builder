@@ -47,6 +47,11 @@ on:
           - 'KernelSU'
           - 'KernelSU-Next'
           - 'None'
+      droidspaces:
+        description: 'Tambahkan dukungan Droidspaces (patch + config)'
+        required: true
+        default: true
+        type: boolean
 
 jobs:
   build-kernel:
@@ -139,6 +144,28 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           fi
 
+      - name: Add Droidspaces patches
+        if: inputs.droidspaces
+        working-directory: kernel
+        run: |
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/ravindu644/Droidspaces-OSS ../droidspaces
+          git -C ../droidspaces sparse-checkout set Documentation/resources/kernel-patches
+          PDIR="../droidspaces/Documentation/resources/kernel-patches"
+          echo "--- isi kernel-patches ---"
+          find "$PDIR" -type f | sort
+          APPLIED=0
+          while IFS= read -r P; do
+            if git apply --check "$P" 2>/dev/null; then
+              git apply "$P"
+              echo "APPLIED: $P"
+              APPLIED=$((APPLIED + 1))
+            else
+              echo "SKIP (tidak cocok): $P"
+            fi
+          done < <(find "$PDIR" -type f \( -name '*.patch' -o -name '*.diff' \) | sort)
+          echo "Total patch diterapkan: $APPLIED"
+
       - name: Build Kernel
         working-directory: kernel
         run: |
@@ -176,6 +203,22 @@ jobs:
             scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            echo "--- Droidspaces config ---"
+            DS_CFG="SYSCTL SYSVIPC POSIX_MQUEUE NAMESPACES PID_NS UTS_NS IPC_NS \
+              SECCOMP SECCOMP_FILTER CGROUPS CGROUP_DEVICE DEVTMPFS \
+              NET_NS VETH BRIDGE BRIDGE_NETFILTER NETFILTER NF_CONNTRACK NF_NAT \
+              IP_NF_IPTABLES IP_NF_NAT IP_NF_TARGET_MASQUERADE \
+              NETFILTER_XT_TARGET_MASQUERADE NETFILTER_XT_MATCH_ADDRTYPE \
+              NETFILTER_XT_MATCH_CONNTRACK OVERLAY_FS"
+            for c in $DS_CFG; do
+              scripts/config --file out/.config -e "$c"
+            done
+            make $MAKE_ARGS olddefconfig
+            for c in SYSVIPC POSIX_MQUEUE NAMESPACES PID_NS UTS_NS IPC_NS SECCOMP CGROUP_DEVICE DEVTMPFS; do
+              grep -q "^CONFIG_$c=y" out/.config || echo "::warning::CONFIG_$c TIDAK aktif (Droidspaces butuh ini)"
+            done
+          fi
           # BTF butuh pahole; DWARF4 lebih aman untuk pahole bawaan Ubuntu 22.04
           if command -v pahole >/dev/null 2>&1; then
             echo "pahole: $(pahole --version)"
@@ -187,7 +230,7 @@ jobs:
             make $MAKE_ARGS olddefconfig
           fi
           echo "--- cek config penting ---"
-          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU|LTO_CLANG_THIN|LTO_CLANG_FULL|DEBUG_INFO_BTF|DEBUG_INFO_DWARF4)=" out/.config || true
+          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU|LTO_CLANG_THIN|LTO_CLANG_FULL|DEBUG_INFO_BTF|DEBUG_INFO_DWARF4|SYSVIPC|PID_NS|DEVTMPFS)=" out/.config || true
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log || {
             echo "=============== ERROR RINGKAS ==============="
             grep -n -E "error:|undefined reference|\*\*\* \[|No rule to make" ../build.log | grep -v "__sub-make" | head -n 30
@@ -202,15 +245,17 @@ jobs:
           find kernel/out/arch/arm64/boot/dts -name '*.dtb' -exec cp {} output/ \; 2>/dev/null || true
           ls -lh output
 
-      - name: Package AnyKernel3
+      - name: Package AnyKernel3 zip
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3
-          rm -rf ak3/.git ak3/.github
-          cp kernel/out/arch/arm64/boot/Image ak3/Image
-          cat > ak3/anykernel.sh << 'AKEOF'
-          ### AnyKernel3 - Sapphire (kernel saja, ramdisk tidak diubah)
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
+          cd AnyKernel3
+          rm -rf .git .github README.md
+
+          cat > anykernel.sh << AKEOF
+          ### AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=Sapphire Kernel (GitHub Actions)
+          kernel.string=Sapphire Kernel (${{ inputs.ksu_variant }}) - ${{ inputs.kernel_branch }}
           do.devicecheck=1
           do.modules=0
           do.systemless=0
@@ -226,20 +271,20 @@ jobs:
           supported.vendorpatchlevels=
           '; }
 
-          BLOCK=boot;
-          IS_SLOT_DEVICE=auto;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
+          block=boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
 
           . tools/ak3-core.sh;
 
           split_boot;
           flash_boot;
           AKEOF
+
           ZIP="Sapphire-${{ inputs.ksu_variant }}-$(date +%Y%m%d-%H%M).zip"
-          (cd ak3 && zip -r9 "../$ZIP" . -x "README.md" "*placeholder")
-          mkdir -p output
-          mv "$ZIP" output/
+          zip -r9 "../output/$ZIP" . -x ".git*"
+          cd ..
           ls -lh output
 
       - name: Upload Artifact
@@ -255,3 +300,4 @@ jobs:
           name: build-log
           path: build.log
           if-no-files-found: ignore
+          
