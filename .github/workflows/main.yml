@@ -163,7 +163,12 @@ jobs:
             scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
-          make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log
+          make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log || {
+            echo "=============== ERROR RINGKAS ==============="
+            grep -n -E "error:|undefined reference|\*\*\* \[|No rule to make" ../build.log | grep -v "__sub-make" | head -n 30
+            echo "::error::Build gagal, lihat bagian ERROR RINGKAS di atas"
+            exit 1
+          }
 
       - name: Collect Output
         run: |
