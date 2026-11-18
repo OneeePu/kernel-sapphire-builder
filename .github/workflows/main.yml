@@ -45,14 +45,20 @@ jobs:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 8192
+          root-reserve-mb: 20480
+          temp-reserve-mb: 2048
+          swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
+          remove-docker-images: 'true'
 
       - name: Checkout Builder Repo
         uses: actions/checkout@v4
+
+      - name: Check Disk
+        run: df -h / "$GITHUB_WORKSPACE"
 
       - name: Install Dependencies
         run: |
@@ -73,11 +79,16 @@ jobs:
           if [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
             git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
           else
-            curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" \
-              -o clang.tar.gz
-            tar -xzf clang.tar.gz -C clang
+            if curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" -o clang.tar.gz; then
+              tar -xzf clang.tar.gz -C clang
+            else
+              echo "::warning::Clang ${{ inputs.clang_version }} tidak ditemukan, pakai proton-clang"
+              rm -rf clang
+              git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+            fi
           fi
           echo "$PWD/clang/bin" >> "$GITHUB_PATH"
+          "$PWD/clang/bin/clang" --version | head -n1
 
       - name: Add KernelSU
         if: inputs.ksu_variant != 'None'
@@ -92,7 +103,7 @@ jobs:
       - name: Build Kernel
         working-directory: kernel
         run: |
-          export ARCH=arm64
+          set -o pipefail
           MAKE_ARGS="O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
           make $MAKE_ARGS "${{ inputs.defconfig }}"
@@ -105,8 +116,8 @@ jobs:
       - name: Collect Output
         run: |
           mkdir -p output
-          cp kernel/out/arch/arm64/boot/Image* output/ || true
-          cp kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb output/ 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image* output/
+          find kernel/out/arch/arm64/boot/dts -name '*.dtb' -exec cp {} output/ \; 2>/dev/null || true
           ls -lh output
 
       - name: Upload Artifact
