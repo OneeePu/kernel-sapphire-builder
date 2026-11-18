@@ -13,8 +13,8 @@ on:
         default: 'main'
         type: string
       defconfig:
-        description: 'Kernel Defconfig (auto-detected if blank)'
-        required: false
+        description: 'Kernel Defconfig'
+        required: true
         default: 'vendor/sapphire-perf_defconfig'
         type: string
       clang_version:
@@ -36,14 +36,90 @@ on:
           - 'KernelSU'
           - 'KernelSU-Next'
           - 'None'
+
 jobs:
   build-kernel:
     name: Build Sapphire Kernel (${{ inputs.ksu_variant }})
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Builder Repo
-        uses: actions/checkout@v4
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Checkout Builder Repo
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev cpio zip curl git \
+            python3 lz4 xz-utils ccache device-tree-compiler \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b "${{ inputs.kernel_branch }}" \
+            "${{ inputs.kernel_repo }}" kernel
+
+      - name: Setup Clang
+        run: |
+          mkdir -p clang
+          if [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
+            git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+          else
+            curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" \
+              -o clang.tar.gz
+            tar -xzf clang.tar.gz -C clang
+          fi
+          echo "$PWD/clang/bin" >> "$GITHUB_PATH"
+
+      - name: Add KernelSU
+        if: inputs.ksu_variant != 'None'
+        working-directory: kernel
+        run: |
+          if [ "${{ inputs.ksu_variant }}" = "KernelSU-Next" ]; then
+            curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          else
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          fi
+
+      - name: Build Kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          MAKE_ARGS="O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
+          make $MAKE_ARGS "${{ inputs.defconfig }}"
+          if [ "${{ inputs.ksu_variant }}" != "None" ]; then
+            scripts/config --file out/.config -e KSU
+            make $MAKE_ARGS olddefconfig
+          fi
+          make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log
+
+      - name: Collect Output
+        run: |
+          mkdir -p output
+          cp kernel/out/arch/arm64/boot/Image* output/ || true
+          cp kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb output/ 2>/dev/null || true
+          ls -lh output
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sapphire-kernel-${{ inputs.ksu_variant }}
+          path: output/*
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+          
