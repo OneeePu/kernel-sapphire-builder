@@ -58,7 +58,7 @@ jobs:
         with:
           root-reserve-mb: 20480
           temp-reserve-mb: 2048
-          swap-size-mb: 1024
+          swap-size-mb: 8192
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -169,12 +169,15 @@ jobs:
           MAKE_ARGS="O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
           make $MAKE_ARGS $CFG
+          # Ganti Full LTO ke ThinLTO (lebih hemat RAM dan lebih cepat)
+          scripts/config --file out/.config -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+          make $MAKE_ARGS olddefconfig
           if [ "${{ inputs.ksu_variant }}" != "None" ]; then
             scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
           echo "--- cek config penting ---"
-          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU)=" out/.config || true
+          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU|LTO_CLANG_THIN|LTO_CLANG_FULL)=" out/.config || true
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log || {
             echo "=============== ERROR RINGKAS ==============="
             grep -n -E "error:|undefined reference|\*\*\* \[|No rule to make" ../build.log | grep -v "__sub-make" | head -n 30
