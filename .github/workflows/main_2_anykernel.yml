@@ -53,6 +53,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   build-kernel:
     name: Build Sapphire Kernel (${{ inputs.ksu_variant }})
@@ -286,6 +289,18 @@ jobs:
           zip -r9 "../output/$ZIP" . -x ".git*"
           cd ..
           ls -lh output
+
+      - name: Publish Release (zip langsung bisa diunduh)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${{ github.run_number }}"
+          ZIP="$(ls output/Sapphire-*.zip | head -n1)"
+          echo "Upload: $ZIP"
+          gh release create "$TAG" "$ZIP" \
+            --repo "${{ github.repository }}" \
+            --title "Sapphire Kernel $TAG (${{ inputs.ksu_variant }})" \
+            --notes "Branch: ${{ inputs.kernel_branch }} | KernelSU: ${{ inputs.ksu_variant }} | Droidspaces: ${{ inputs.droidspaces }}"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
