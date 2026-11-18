@@ -58,7 +58,7 @@ jobs:
         with:
           root-reserve-mb: 20480
           temp-reserve-mb: 2048
-          swap-size-mb: 8192
+          swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -74,7 +74,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev cpio zip curl git \
             python3 lz4 xz-utils ccache device-tree-compiler \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi dwarves
 
       - name: Clone Kernel Source
         run: |
@@ -176,8 +176,18 @@ jobs:
             scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
+          # BTF butuh pahole; DWARF4 lebih aman untuk pahole bawaan Ubuntu 22.04
+          if command -v pahole >/dev/null 2>&1; then
+            echo "pahole: $(pahole --version)"
+            scripts/config --file out/.config -e DEBUG_INFO_DWARF4
+            make $MAKE_ARGS olddefconfig
+          else
+            echo "::warning::pahole tidak ada, BTF dimatikan"
+            scripts/config --file out/.config -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
+            make $MAKE_ARGS olddefconfig
+          fi
           echo "--- cek config penting ---"
-          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU|LTO_CLANG_THIN|LTO_CLANG_FULL)=" out/.config || true
+          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU|LTO_CLANG_THIN|LTO_CLANG_FULL|DEBUG_INFO_BTF|DEBUG_INFO_DWARF4)=" out/.config || true
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log || {
             echo "=============== ERROR RINGKAS ==============="
             grep -n -E "error:|undefined reference|\*\*\* \[|No rule to make" ../build.log | grep -v "__sub-make" | head -n 30
