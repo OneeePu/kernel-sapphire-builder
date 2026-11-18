@@ -5,27 +5,38 @@ on:
       kernel_repo:
         description: 'Kernel Source Repository'
         required: true
-        default: 'https://github.com/The-Angel-Place-Sapphire/kernel_xiaomi_sapphire'
+        default: 'https://github.com/OneeePu/kernel_xiaomi_sapphire'
         type: string
       kernel_branch:
         description: 'Kernel Branch'
         required: true
-        default: 'main'
+        default: 'lineage-23.2'
         type: string
       defconfig:
-        description: 'Kernel Defconfig'
-        required: true
-        default: 'vendor/sapphire-perf_defconfig'
+        description: 'Defconfig (boleh lebih dari satu, pisah spasi; kosong = auto-detect)'
+        required: false
+        default: ''
+        type: string
+      clang_repo:
+        description: 'Custom Clang Repo (dipakai jika Clang Version = custom-repo)'
+        required: false
+        default: 'https://github.com/onettboots/update-alternative-clang'
+        type: string
+      clang_branch:
+        description: 'Custom Clang Branch (kosong = default branch)'
+        required: false
+        default: ''
         type: string
       clang_version:
         description: 'Clang Toolchain Version'
         required: true
-        default: 'r487747c'
+        default: 'custom-repo'
         type: choice
         options:
+          - 'custom-repo'
+          - 'r510928'
           - 'r487747c'
           - 'r450784d'
-          - 'r510928'
           - 'proton-clang'
       ksu_variant:
         description: 'KernelSU Variant'
@@ -57,9 +68,6 @@ jobs:
       - name: Checkout Builder Repo
         uses: actions/checkout@v4
 
-      - name: Check Disk
-        run: df -h / "$GITHUB_WORKSPACE"
-
       - name: Install Dependencies
         run: |
           sudo apt-get update
@@ -70,14 +78,45 @@ jobs:
 
       - name: Clone Kernel Source
         run: |
-          git clone --depth=1 -b "${{ inputs.kernel_branch }}" \
-            "${{ inputs.kernel_repo }}" kernel
+          REPO="${{ inputs.kernel_repo }}"
+          BRANCH="${{ inputs.kernel_branch }}"
+          echo "Branch tersedia:"
+          git ls-remote --heads "$REPO" | sed 's|.*refs/heads/||'
+          if [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$REPO" "$BRANCH" >/dev/null; then
+            git clone --depth=1 -b "$BRANCH" "$REPO" kernel
+          else
+            echo "::warning::Branch '$BRANCH' tidak ada, pakai default branch"
+            git clone --depth=1 "$REPO" kernel
+          fi
+          echo "Branch dipakai: $(git -C kernel branch --show-current)"
+          echo "--- configs ---"
+          ls kernel/arch/arm64/configs kernel/arch/arm64/configs/vendor 2>/dev/null || true
 
       - name: Setup Clang
         run: |
           mkdir -p clang
-          if [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
+          if [ "${{ inputs.clang_version }}" = "custom-repo" ]; then
+            CB="${{ inputs.clang_branch }}"
+            if [ -n "$CB" ]; then
+              git clone --depth=1 -b "$CB" "${{ inputs.clang_repo }}" clang-src
+            else
+              git clone --depth=1 "${{ inputs.clang_repo }}" clang-src
+            fi
+            echo "--- isi repo clang ---"
+            ls -la clang-src
+            CLANG_BIN="$(find clang-src -type f -path '*/bin/clang' | head -n1)"
+            if [ -z "$CLANG_BIN" ]; then
+              echo "::error::bin/clang tidak ditemukan di repo clang. Cek isi repo di log."
+              exit 1
+            fi
+            CLANG_DIR="$(cd "$(dirname "$CLANG_BIN")/.." && pwd)"
+            chmod -R +x "$CLANG_DIR/bin"
+            echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+            "$CLANG_DIR/bin/clang" --version | head -n1
+          elif [ "${{ inputs.clang_version }}" = "proton-clang" ]; then
             git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+            echo "$PWD/clang/bin" >> "$GITHUB_PATH"
+            "$PWD/clang/bin/clang" --version | head -n1
           else
             if curl -fL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${{ inputs.clang_version }}.tar.gz" -o clang.tar.gz; then
               tar -xzf clang.tar.gz -C clang
@@ -86,9 +125,9 @@ jobs:
               rm -rf clang
               git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
             fi
+            echo "$PWD/clang/bin" >> "$GITHUB_PATH"
+            "$PWD/clang/bin/clang" --version | head -n1
           fi
-          echo "$PWD/clang/bin" >> "$GITHUB_PATH"
-          "$PWD/clang/bin/clang" --version | head -n1
 
       - name: Add KernelSU
         if: inputs.ksu_variant != 'None'
@@ -104,11 +143,24 @@ jobs:
         working-directory: kernel
         run: |
           set -o pipefail
+          CFG="${{ inputs.defconfig }}"
+          FIRST="${CFG%% *}"
+          if [ -z "$FIRST" ] || [ ! -f "arch/arm64/configs/$FIRST" ]; then
+            echo "::warning::Defconfig '$FIRST' tidak ditemukan, auto-detect..."
+            CFG="$(cd arch/arm64/configs && find . -type f -iname '*sapphire*' | sed 's|^\./||' | sort | head -n1)"
+            if [ -z "$CFG" ]; then
+              echo "::error::Tidak ada defconfig sapphire. Isi input defconfig manual."
+              ls arch/arm64/configs arch/arm64/configs/vendor 2>/dev/null
+              exit 1
+            fi
+          fi
+          echo "Defconfig dipakai: $CFG"
+
           MAKE_ARGS="O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-"
-          make $MAKE_ARGS "${{ inputs.defconfig }}"
+          make $MAKE_ARGS $CFG
           if [ "${{ inputs.ksu_variant }}" != "None" ]; then
-            scripts/config --file out/.config -e KSU
+            scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log
