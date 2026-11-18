@@ -154,6 +154,16 @@ jobs:
               exit 1
             fi
           fi
+          # Fragment (*.config) tidak lengkap sendirian: gabungkan dengan gki_defconfig
+          FIRST="${CFG%% *}"
+          case "$FIRST" in
+            *.config)
+              if [ -f arch/arm64/configs/gki_defconfig ]; then
+                echo "::warning::'$FIRST' adalah fragment, ditambah gki_defconfig sebagai dasar"
+                CFG="gki_defconfig $CFG"
+              fi
+              ;;
+          esac
           echo "Defconfig dipakai: $CFG"
 
           MAKE_ARGS="O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang \
@@ -163,6 +173,8 @@ jobs:
             scripts/config --file out/.config -e KSU -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
             make $MAKE_ARGS olddefconfig
           fi
+          echo "--- cek config penting ---"
+          grep -E "^CONFIG_(ANDROID_VENDOR_OEM_DATA|CGROUP_SCHED|SCHED_WALT|KPROBES|KSU)=" out/.config || true
           make $MAKE_ARGS -j"$(nproc)" 2>&1 | tee ../build.log || {
             echo "=============== ERROR RINGKAS ==============="
             grep -n -E "error:|undefined reference|\*\*\* \[|No rule to make" ../build.log | grep -v "__sub-make" | head -n 30
